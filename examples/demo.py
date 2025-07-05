@@ -1,12 +1,16 @@
 """
-AgentHub Server Demo - Complete example of the AgentHub marketplace server
+AgentHub Server Demo - Complete example using an existing AgentHub marketplace server
 
 This example demonstrates:
 1. Creating multiple AI agents using the core AgentHub SDK
-2. Starting the AgentHub marketplace server (separate project)
+2. Connecting to an existing AgentHub marketplace server on localhost:8080
 3. Registering agents with the hub
 4. Using the marketplace to discover and hire agents
 5. Monitoring agent performance and analytics
+
+Prerequisites:
+    - AgentHub Server must be running on localhost:8080
+    - Start the server with: python -m agenthub_server.cli start-server
 
 Usage:
     python examples/demo.py
@@ -27,7 +31,6 @@ import logging
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # AgentHub Server imports
-from agenthub_server import create_hub_server, serve_hub, init_database
 from agenthub_server.models import AgentMetadata
 
 # For the demo, we'll simulate AgentBuilder functionality
@@ -273,52 +276,62 @@ def start_agent_servers(agents_config):
     return threads
 
 
-def start_hub_server():
-    """Start the AgentHub marketplace server"""
-    def run_hub():
-        try:
-            # Initialize database
-            db = init_database("sqlite:///agenthub_demo.db")
-            
-            # Create and start server
-            server = create_hub_server(
-                database_url="sqlite:///agenthub_demo.db",
-                enable_cors=True,
-                require_auth=False  # Disable auth for demo
-            )
-            
-            logger.info("Starting AgentHub marketplace server on port 8080")
-            serve_hub(
-                server=server,
-                host="localhost",
-                port=8080,
-                log_level="warning"
-            )
-        except Exception as e:
-            logger.error(f"Failed to start hub server: {e}")
+async def check_server_health():
+    """Check if the AgentHub server is running on localhost:8080"""
+    import urllib.request
+    import urllib.error
     
-    thread = threading.Thread(target=run_hub, daemon=True)
-    thread.start()
-    time.sleep(2)  # Give server time to start
-    return thread
+    try:
+        with urllib.request.urlopen("http://localhost:8080/health") as response:
+            health = json.loads(response.read().decode())
+        logger.info(f"✅ AgentHub server is running - {health.get('agents_count', 0)} agents registered")
+        return True
+    except urllib.error.URLError as e:
+        logger.error(f"❌ AgentHub server is not running on localhost:8080: {e}")
+        logger.error("Please start the server with: python -m agenthub_server.cli start-server")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Error checking server health: {e}")
+        return False
 
 
 async def register_agents_with_hub(agents_config):
-    """Register agents with the AgentHub marketplace"""
-    # Initialize database directly for registration
-    db = init_database("sqlite:///agenthub_demo.db")
+    """Register agents with the AgentHub marketplace via HTTP API"""
+    import urllib.request
+    import urllib.parse
     
     agent_ids = []
     for agent, port in agents_config:
         try:
-            agent_id = db.register_agent(
-                agent.metadata,
-                endpoint_url=f"http://localhost:{port}"
+            # Prepare agent registration data
+            registration_data = {
+                "name": agent.metadata.name,
+                "description": agent.metadata.description,
+                "category": agent.metadata.category,
+                "version": agent.metadata.version,
+                "author": agent.metadata.author,
+                "license": agent.metadata.license,
+                "tags": agent.metadata.tags,
+                "pricing": agent.metadata.pricing,
+                "endpoint_url": f"http://localhost:{port}",
+                "endpoints": list(agent.endpoints.keys())
+            }
+            
+            # Register with the marketplace
+            req = urllib.request.Request(
+                "http://localhost:8080/agents",
+                data=json.dumps(registration_data).encode(),
+                headers={'Content-Type': 'application/json'}
             )
-            agent_ids.append((agent_id, agent.agent_name))
-            logger.info(f"Registered {agent.agent_name} with ID: {agent_id}")
+            
+            with urllib.request.urlopen(req) as response:
+                result = json.loads(response.read().decode())
+                agent_id = result["agent_id"]
+                agent_ids.append((agent_id, agent.agent_name))
+                logger.info(f"✅ Registered {agent.agent_name} with ID: {agent_id}")
+                
         except Exception as e:
-            logger.error(f"Failed to register {agent.agent_name}: {e}")
+            logger.error(f"❌ Failed to register {agent.agent_name}: {e}")
     
     return agent_ids
 
@@ -336,26 +349,20 @@ async def demonstrate_marketplace_usage():
     base_url = "http://localhost:8080"
     
     try:
-        # Test server health
-        logger.info("📊 Checking server health...")
-        with urllib.request.urlopen(f"{base_url}/health") as response:
-            health = json.loads(response.read().decode())
-        logger.info(f"✅ Server healthy - {health['agents_count']} agents registered")
-        
         # Search for agents
-        logger.info("🔍 Searching for agents...")
+        logger.info("� Searching for available agents...")
         with urllib.request.urlopen(f"{base_url}/agents") as response:
             agents_data = json.loads(response.read().decode())
         agents = agents_data["agents"]
         
         logger.info(f"📋 Found {len(agents)} agents:")
         for agent in agents:
-            logger.info(f"  🤖 {agent['name']} ({agent['category']}) - {agent['total_tasks']} tasks")
+            logger.info(f"  🤖 {agent['name']} ({agent['category']}) - {agent['total_tasks']} tasks completed")
         
-        # Hire the calculator agent
+        # Hire the calculator agent for a task
         calculator_agent = next((a for a in agents if "Calculator" in a['name']), None)
         if calculator_agent:
-            logger.info("🧮 Hiring Calculator Agent for addition...")
+            logger.info("🧮 Hiring Calculator Agent for addition task...")
             
             task_data = {
                 "agent_id": calculator_agent['id'],
@@ -372,6 +379,7 @@ async def demonstrate_marketplace_usage():
             with urllib.request.urlopen(req) as response:
                 task = json.loads(response.read().decode())
             task_id = task["task_id"]
+            logger.info(f"� Created task {task_id}")
             
             # Wait for task completion
             for i in range(10):
@@ -387,6 +395,47 @@ async def demonstrate_marketplace_usage():
                 elif task_status["status"] == "failed":
                     logger.error(f"❌ Task failed: {task_status.get('error')}")
                     break
+            else:
+                logger.warning("⏰ Task did not complete within timeout")
+        
+        # Hire the text processor agent for another task
+        text_agent = next((a for a in agents if "Text" in a['name']), None)
+        if text_agent:
+            logger.info("📝 Hiring Text Processor Agent for text transformation...")
+            
+            task_data = {
+                "agent_id": text_agent['id'],
+                "endpoint": "/uppercase",
+                "parameters": {"text": "Hello AgentHub Marketplace!"}
+            }
+            
+            # Create task
+            req = urllib.request.Request(
+                f"{base_url}/tasks",
+                data=json.dumps(task_data).encode(),
+                headers={'Content-Type': 'application/json'}
+            )
+            with urllib.request.urlopen(req) as response:
+                task = json.loads(response.read().decode())
+            task_id = task["task_id"]
+            logger.info(f"📋 Created task {task_id}")
+            
+            # Wait for task completion
+            for i in range(10):
+                await asyncio.sleep(1)
+                with urllib.request.urlopen(f"{base_url}/tasks/{task_id}") as response:
+                    task_status = json.loads(response.read().decode())
+                
+                if task_status["status"] == "completed":
+                    result = task_status["result"]
+                    logger.info(f"✅ Task completed! Result: '{result['result']['result']}'")
+                    logger.info(f"⏱️  Execution time: {task_status['execution_time']:.3f}s")
+                    break
+                elif task_status["status"] == "failed":
+                    logger.error(f"❌ Task failed: {task_status.get('error')}")
+                    break
+            else:
+                logger.warning("⏰ Task did not complete within timeout")
         
         logger.info("🎯 Marketplace demo completed!")
         
@@ -398,7 +447,13 @@ async def demonstrate_marketplace_usage():
 
 async def main():
     """Main demo function"""
-    logger.info("🚀 Starting AgentHub Server Demo")
+    logger.info("🚀 Starting AgentHub Demo (connecting to existing server)")
+    
+    # Check if server is running
+    if not await check_server_health():
+        logger.error("❌ Cannot proceed without AgentHub server running")
+        logger.info("🔧 To start the server, run: python -m agenthub_server.cli start-server")
+        return
     
     # Create agents
     logger.info("🤖 Creating agents...")
@@ -416,26 +471,26 @@ async def main():
     logger.info("🖥️  Starting agent servers...")
     agent_threads = start_agent_servers(agents_config)
     
-    # Start hub server
-    logger.info("🏪 Starting AgentHub marketplace server...")
-    # hub_thread = start_hub_server()
-    
-    # Wait for servers to be ready
-    await asyncio.sleep(5)
+    # Wait for agent servers to be ready
+    await asyncio.sleep(3)
     
     # Register agents with hub
     logger.info("📝 Registering agents with marketplace...")
     agent_ids = await register_agents_with_hub(agents_config)
+    
+    if not agent_ids:
+        logger.error("❌ No agents were registered successfully")
+        return
     
     # Demonstrate marketplace usage
     await asyncio.sleep(2)
     await demonstrate_marketplace_usage()
     
     # Keep demo running
-    logger.info("🎯 Demo completed! Servers will continue running...")
+    logger.info("🎯 Demo completed! Agent servers will continue running...")
     logger.info("💡 You can now:")
     logger.info("   - Visit http://localhost:8080/health to check server status")
-    logger.info("   - Use the CLI: python -m agenthub_server.cli list-agents")
+    logger.info("   - Visit http://localhost:8080/agents to see registered agents")
     logger.info("   - Test agents directly: curl http://localhost:8001/add -d '{\"a\":5,\"b\":3}' -H 'Content-Type: application/json'")
     logger.info("   - Press Ctrl+C to stop")
     
