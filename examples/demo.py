@@ -303,6 +303,17 @@ async def register_agents_with_hub(agents_config):
     agent_ids = []
     for agent, port in agents_config:
         try:
+            # Convert pricing to dict if it's a PricingModel object
+            pricing_data = agent.metadata.pricing
+            if hasattr(pricing_data, 'dict'):
+                pricing_data = pricing_data.dict()
+            elif hasattr(pricing_data, '__dict__'):
+                pricing_data = {
+                    "type": str(pricing_data.type) if hasattr(pricing_data.type, 'value') else pricing_data.type,
+                    "price": pricing_data.price,
+                    "currency": pricing_data.currency
+                }
+            
             # Prepare agent registration data
             registration_data = {
                 "name": agent.metadata.name,
@@ -312,7 +323,7 @@ async def register_agents_with_hub(agents_config):
                 "author": agent.metadata.author,
                 "license": agent.metadata.license,
                 "tags": agent.metadata.tags,
-                "pricing": agent.metadata.pricing,
+                "pricing": pricing_data,
                 "endpoint_url": f"http://localhost:{port}",
                 "endpoints": list(agent.endpoints.keys())
             }
@@ -332,6 +343,8 @@ async def register_agents_with_hub(agents_config):
                 
         except Exception as e:
             logger.error(f"❌ Failed to register {agent.agent_name}: {e}")
+            import traceback
+            traceback.print_exc()
     
     return agent_ids
 
