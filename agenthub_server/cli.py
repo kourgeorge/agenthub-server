@@ -604,5 +604,333 @@ def example_config_command(output, docker):
         click.echo("📝 Edit this file and use 'agenthub register-agent --config example_agent.yaml'")
 
 
+@hub_cli.command("marketplace-discover")
+@click.option("--category", help="Filter by category")
+@click.option("--name", help="Filter by name pattern")
+@click.option("--limit", default=10, help="Maximum number of agents to show")
+@click.option("--api-key", help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def marketplace_discover_command(category, name, limit, api_key, server_url):
+    """Discover agents in the marketplace"""
+    click.echo("🔍 Discovering agents in marketplace...")
+    
+    try:
+        import httpx
+        
+        params = {"limit": limit}
+        if category:
+            params["category"] = category
+        if name:
+            params["name"] = name
+        
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
+        response = httpx.get(f"{server_url}/marketplace/agents", params=params, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        agents = data.get("agents", [])
+        
+        if not agents:
+            click.echo("📭 No agents found")
+            return
+        
+        click.echo(f"📋 Found {len(agents)} agent(s):")
+        click.echo()
+        
+        for agent in agents:
+            marketplace_info = agent.get("marketplace_info", {})
+            pricing_info = marketplace_info.get("pricing_info", {})
+            
+            click.echo(f"🤖 {agent['name']}")
+            click.echo(f"   ID: {agent['id']}")
+            click.echo(f"   Category: {agent['category']}")
+            click.echo(f"   Description: {agent['description']}")
+            click.echo(f"   Version: {agent['version']}")
+            click.echo(f"   Price: {pricing_info.get('price', 0)} {pricing_info.get('currency', 'USD')} per {pricing_info.get('type', 'request')}")
+            click.echo(f"   Instances: {marketplace_info.get('total_instances', 0)}")
+            click.echo(f"   Your Instances: {marketplace_info.get('customer_instances', 0)}")
+            click.echo()
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to discover agents: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-create")
+@click.argument("agent_id")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+@click.option("--config", help="Instance configuration JSON file")
+def instance_create_command(agent_id, api_key, server_url, config):
+    """Create a new agent instance"""
+    click.echo(f"🚀 Creating instance for agent: {agent_id}")
+    
+    try:
+        import httpx
+        
+        # Load instance config if provided
+        instance_config = {}
+        if config:
+            config_path = Path(config)
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    instance_config = json.load(f)
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        data = {
+            "agent_id": agent_id,
+            "instance_config": instance_config
+        }
+        
+        response = httpx.post(f"{server_url}/marketplace/instances", json=data, headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        click.echo(f"✅ Instance created successfully!")
+        click.echo(f"🆔 Instance ID: {result['instance_id']}")
+        click.echo(f"🤖 Agent ID: {result['agent_id']}")
+        click.echo(f"📊 Status: {result['status']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to create instance: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-list")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def instance_list_command(api_key, server_url):
+    """List your agent instances"""
+    click.echo("📋 Listing your agent instances...")
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.get(f"{server_url}/marketplace/instances", headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        instances = data.get("instances", [])
+        
+        if not instances:
+            click.echo("📭 No instances found")
+            return
+        
+        click.echo(f"📊 Found {len(instances)} instance(s):")
+        click.echo()
+        
+        for instance in instances:
+            billing = instance.get("billing_info", {})
+            resource = instance.get("resource_usage", {})
+            health = instance.get("health_status", {})
+            
+            click.echo(f"🔧 {instance['instance_id'][:8]}...")
+            click.echo(f"   Agent ID: {instance['agent_id']}")
+            click.echo(f"   Status: {instance['status']}")
+            click.echo(f"   Created: {instance['created_at']}")
+            click.echo(f"   Uptime: {resource.get('uptime', 0)/3600:.2f} hours")
+            click.echo(f"   Tasks: {resource.get('task_count', 0)}")
+            click.echo(f"   Cost: ${billing.get('total_cost', 0):.2f}")
+            click.echo(f"   Health: {'✅' if health.get('healthy', False) else '❌'}")
+            click.echo()
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to list instances: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-details")
+@click.argument("instance_id")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def instance_details_command(instance_id, api_key, server_url):
+    """Get detailed information about an instance"""
+    click.echo(f"🔍 Getting details for instance: {instance_id}")
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.get(f"{server_url}/marketplace/instances/{instance_id}", headers=headers)
+        response.raise_for_status()
+        
+        instance = response.json()
+        
+        click.echo(f"🔧 Instance Details")
+        click.echo(f"{'='*50}")
+        click.echo(f"Instance ID: {instance['instance_id']}")
+        click.echo(f"Agent ID: {instance['agent_id']}")
+        click.echo(f"Status: {instance['status']}")
+        click.echo(f"Created: {instance['created_at']}")
+        if instance.get('started_at'):
+            click.echo(f"Started: {instance['started_at']}")
+        if instance.get('stopped_at'):
+            click.echo(f"Stopped: {instance['stopped_at']}")
+        
+        click.echo()
+        click.echo("📊 Resource Usage:")
+        resource = instance.get("resource_usage", {})
+        click.echo(f"   CPU: {resource.get('cpu_usage', 0):.1f}%")
+        click.echo(f"   Memory: {resource.get('memory_usage', 0):.1f}%")
+        click.echo(f"   Uptime: {resource.get('uptime', 0)/3600:.2f} hours")
+        click.echo(f"   Tasks: {resource.get('task_count', 0)}")
+        
+        click.echo()
+        click.echo("💰 Billing:")
+        billing = instance.get("billing_info", {})
+        click.echo(f"   Total Cost: ${billing.get('total_cost', 0):.2f}")
+        click.echo(f"   Usage Time: {billing.get('usage_time', 0)/3600:.2f} hours")
+        click.echo(f"   Task Executions: {billing.get('task_executions', 0)}")
+        
+        click.echo()
+        click.echo("🏥 Health Status:")
+        health = instance.get("health_status", {})
+        click.echo(f"   Healthy: {'✅' if health.get('healthy', False) else '❌'}")
+        if health.get('last_heartbeat'):
+            click.echo(f"   Last Heartbeat: {health['last_heartbeat']}")
+        if health.get('error_count', 0) > 0:
+            click.echo(f"   Error Count: {health['error_count']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to get instance details: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-pause")
+@click.argument("instance_id")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def instance_pause_command(instance_id, api_key, server_url):
+    """Pause an agent instance"""
+    click.echo(f"⏸️  Pausing instance: {instance_id}")
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.post(f"{server_url}/marketplace/instances/{instance_id}/pause", headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        click.echo(f"✅ {result['message']}")
+        click.echo(f"📊 Status: {result['status']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to pause instance: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-resume")
+@click.argument("instance_id")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def instance_resume_command(instance_id, api_key, server_url):
+    """Resume a paused agent instance"""
+    click.echo(f"▶️  Resuming instance: {instance_id}")
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.post(f"{server_url}/marketplace/instances/{instance_id}/resume", headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        click.echo(f"✅ {result['message']}")
+        click.echo(f"📊 Status: {result['status']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to resume instance: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("instance-terminate")
+@click.argument("instance_id")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt")
+def instance_terminate_command(instance_id, api_key, server_url, confirm):
+    """Terminate an agent instance"""
+    if not confirm:
+        if not click.confirm(f"Are you sure you want to terminate instance {instance_id}?"):
+            click.echo("❌ Operation cancelled")
+            return
+    
+    click.echo(f"🛑 Terminating instance: {instance_id}")
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.delete(f"{server_url}/marketplace/instances/{instance_id}", headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        click.echo(f"✅ {result['message']}")
+        click.echo(f"📊 Status: {result['status']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to terminate instance: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("dashboard")
+@click.option("--api-key", required=True, help="API key for authentication")
+@click.option("--server-url", default="http://localhost:8080", help="Server URL")
+def dashboard_command(api_key, server_url):
+    """Show customer dashboard"""
+    click.echo("📊 Customer Dashboard")
+    click.echo("=" * 50)
+    
+    try:
+        import httpx
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        response = httpx.get(f"{server_url}/marketplace/dashboard", headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        summary = data.get("summary", {})
+        billing = data.get("billing", {})
+        recent = data.get("recent_instances", [])
+        
+        click.echo(f"Customer ID: {data['customer_id']}")
+        click.echo()
+        
+        click.echo("📈 Summary:")
+        click.echo(f"   Total Instances: {summary.get('total_instances', 0)}")
+        click.echo(f"   Running: {summary.get('running_instances', 0)}")
+        click.echo(f"   Paused: {summary.get('paused_instances', 0)}")
+        click.echo(f"   Total Uptime: {summary.get('total_uptime_hours', 0):.2f} hours")
+        click.echo()
+        
+        click.echo("💰 Billing:")
+        click.echo(f"   Current Month: ${billing.get('current_month_cost', 0):.2f} {billing.get('currency', 'USD')}")
+        click.echo()
+        
+        if recent:
+            click.echo("🕒 Recent Instances:")
+            for instance in recent[:3]:  # Show top 3
+                click.echo(f"   🔧 {instance['instance_id'][:8]}... ({instance['status']})")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to get dashboard: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     hub_cli()

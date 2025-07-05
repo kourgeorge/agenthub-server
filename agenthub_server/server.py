@@ -26,6 +26,7 @@ from .models import (
 )
 from .docker_manager import DockerAgentManager
 from .acp_protocol import ACPManager
+from .agent_lifecycle import AgentLifecycleManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,13 @@ class AgentHubServer:
         
         # Initialize ACP manager
         self.acp_manager = ACPManager()
+        
+        # Initialize Agent Lifecycle Manager
+        self.lifecycle_manager = AgentLifecycleManager(
+            docker_manager=self.docker_manager,
+            acp_manager=self.acp_manager,
+            database_manager=self.db
+        )
         
         # Create FastAPI app
         self.app = FastAPI(
@@ -596,6 +604,285 @@ class AgentHubServer:
                 
             except Exception as e:
                 logger.error(f"Failed to connect to agent {agent_id} via ACP: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        # Marketplace API endpoints
+        @self.app.get("/marketplace/agents")
+        async def marketplace_discover_agents(
+            category: Optional[str] = None,
+            name: Optional[str] = None,
+            limit: int = 20,
+            offset: int = 0,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Discover agents in the marketplace with enhanced information"""
+            try:
+                customer_id = user.get("id")
+                search_criteria = {
+                    "category": category,
+                    "name": name,
+                    "limit": limit,
+                    "offset": offset
+                }
+                
+                enhanced_agents = await self.lifecycle_manager.discover_agents(
+                    customer_id=customer_id,
+                    search_criteria=search_criteria
+                )
+                
+                return {
+                    "agents": enhanced_agents,
+                    "total": len(enhanced_agents),
+                    "limit": limit,
+                    "offset": offset
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to discover marketplace agents: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/marketplace/instances")
+        async def create_agent_instance(
+            request: Dict[str, Any],
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Create a new agent instance for the customer"""
+            try:
+                agent_id = request.get("agent_id")
+                instance_config = request.get("instance_config", {})
+                
+                if not agent_id:
+                    raise HTTPException(status_code=400, detail="agent_id is required")
+                
+                customer_id = user.get("id")
+                
+                instance_id = await self.lifecycle_manager.instantiate_agent(
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    instance_config=instance_config
+                )
+                
+                return {
+                    "instance_id": instance_id,
+                    "agent_id": agent_id,
+                    "customer_id": customer_id,
+                    "status": "starting",
+                    "message": "Agent instance created successfully"
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to create agent instance: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/marketplace/instances")
+        async def list_customer_instances(
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """List all agent instances for the customer"""
+            try:
+                customer_id = user.get("id")
+                instances = self.lifecycle_manager.get_customer_instances(customer_id)
+                
+                return {
+                    "instances": instances,
+                    "count": len(instances),
+                    "customer_id": customer_id
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to list customer instances: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/marketplace/instances/{instance_id}")
+        async def get_instance_details(
+            instance_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Get detailed information about a specific instance"""
+            try:
+                customer_id = user.get("id")
+                instance = self.lifecycle_manager.get_instance_details(instance_id, customer_id)
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instance not found")
+                
+                return instance
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to get instance details: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/marketplace/instances/{instance_id}/pause")
+        async def pause_instance(
+            instance_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Pause an agent instance"""
+            try:
+                customer_id = user.get("id")
+                success = await self.lifecycle_manager.pause_agent_instance(instance_id, customer_id)
+                
+                if not success:
+                    raise HTTPException(status_code=500, detail="Failed to pause instance")
+                
+                return {
+                    "instance_id": instance_id,
+                    "status": "paused",
+                    "message": "Instance paused successfully"
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to pause instance {instance_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/marketplace/instances/{instance_id}/resume")
+        async def resume_instance(
+            instance_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Resume a paused agent instance"""
+            try:
+                customer_id = user.get("id")
+                success = await self.lifecycle_manager.resume_agent_instance(instance_id, customer_id)
+                
+                if not success:
+                    raise HTTPException(status_code=500, detail="Failed to resume instance")
+                
+                return {
+                    "instance_id": instance_id,
+                    "status": "running",
+                    "message": "Instance resumed successfully"
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to resume instance {instance_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.delete("/marketplace/instances/{instance_id}")
+        async def terminate_instance(
+            instance_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Terminate an agent instance"""
+            try:
+                customer_id = user.get("id")
+                success = await self.lifecycle_manager.terminate_agent_instance(instance_id, customer_id)
+                
+                if not success:
+                    raise HTTPException(status_code=500, detail="Failed to terminate instance")
+                
+                return {
+                    "instance_id": instance_id,
+                    "status": "terminated",
+                    "message": "Instance terminated successfully"
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to terminate instance {instance_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/marketplace/dashboard")
+        async def customer_dashboard(
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Get customer dashboard with overview of instances and usage"""
+            try:
+                customer_id = user.get("id")
+                instances = self.lifecycle_manager.get_customer_instances(customer_id)
+                
+                # Calculate summary statistics
+                total_instances = len(instances)
+                running_instances = len([i for i in instances if i["status"] == "running"])
+                paused_instances = len([i for i in instances if i["status"] == "paused"])
+                total_cost = sum(i["billing_info"]["total_cost"] for i in instances)
+                total_uptime = sum(i["resource_usage"]["uptime"] for i in instances)
+                
+                # Get recent instances
+                recent_instances = sorted(instances, key=lambda x: x["created_at"], reverse=True)[:5]
+                
+                return {
+                    "customer_id": customer_id,
+                    "summary": {
+                        "total_instances": total_instances,
+                        "running_instances": running_instances,
+                        "paused_instances": paused_instances,
+                        "total_cost": total_cost,
+                        "total_uptime_hours": total_uptime / 3600.0
+                    },
+                    "recent_instances": recent_instances,
+                    "billing": {
+                        "current_month_cost": total_cost,  # Simplified
+                        "currency": "USD"
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to get customer dashboard: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/marketplace/instances/{instance_id}/execute")
+        async def execute_task_on_instance(
+            instance_id: str,
+            task_request: TaskRequest,
+            background_tasks: BackgroundTasks,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Execute a task on a specific agent instance"""
+            try:
+                customer_id = user.get("id")
+                instance = self.lifecycle_manager.get_instance_details(instance_id, customer_id)
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instance not found")
+                
+                if instance["status"] != "running":
+                    raise HTTPException(status_code=400, detail=f"Instance is not running (status: {instance['status']})")
+                
+                # Create task using the instance's agent
+                task_request.agent_id = instance["agent_id"]
+                
+                # Get agent info for execution
+                agent = self.db.get_agent(instance["agent_id"])
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                # Create task in database
+                task_id = self.db.create_task(
+                    agent_id=task_request.agent_id,
+                    endpoint=task_request.endpoint,
+                    parameters=task_request.parameters,
+                    user_id=user.get("id")
+                )
+                
+                # Execute task in background
+                background_tasks.add_task(
+                    self.execute_task,
+                    task_id,
+                    agent,
+                    task_request
+                )
+                
+                # Update instance task count
+                if instance_id in self.lifecycle_manager.agent_instances:
+                    inst = self.lifecycle_manager.agent_instances[instance_id]
+                    inst.resource_usage["task_count"] += 1
+                    inst.billing_info["task_executions"] += 1
+                
+                return {
+                    "task_id": task_id,
+                    "instance_id": instance_id,
+                    "status": "pending",
+                    "agent_id": task_request.agent_id,
+                    "endpoint": task_request.endpoint,
+                    "created_at": datetime.now().isoformat()
+                }
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to execute task on instance: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
     
     async def get_current_user(
