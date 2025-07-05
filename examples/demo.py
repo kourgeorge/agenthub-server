@@ -29,7 +29,6 @@ import logging
 
 # Add the parent directory to the path to import the server modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
 # AgentHub Server imports
 from agenthub_server.models import AgentMetadata
 

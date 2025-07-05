@@ -1,13 +1,31 @@
 # Core dependencies for AgentHub Server
-fastapi>=0.68.0
-uvicorn[standard]>=0.15.0
-httpx>=0.24.0
-click>=8.0.0
-pydantic>=1.8.0
-pyyaml>=5.4.0
+fastapi>=0.68.0,<1.0.0
+uvicorn[standard]>=0.15.0,<1.0.0
+httpx>=0.24.0,<1.0.0
+click>=8.0.0,<9.0.0
+pydantic>=1.8.0,<2.0.0
+pyyaml>=5.4.0,<7.0.0
+
+# Standard library dependencies (included with Python)
+# - sqlite3 (built-in)
+# - json (built-in)
+# - logging (built-in)
+# - datetime (built-in)
+# - typing (built-in)
+# - pathlib (built-in)
+# - asyncio (built-in)
+# - threading (built-in)
+# - os (built-in)
+# - sys (built-in)
+# - time (built-in)
+# - signal (built-in)
+# - contextlib (built-in)
+# - enum (built-in)
 
 # Optional dependencies (uncomment as needed)
 # psycopg2-binary>=2.9.0  # For PostgreSQL support
+# redis>=4.0.0  # For Redis caching
+# celery>=5.0.0  # For background task processing
 
 # Development dependencies (for development setup)
 # pytest>=6.0.0
@@ -15,3 +33,8 @@ pyyaml>=5.4.0
 # black>=21.0.0
 # flake8>=3.9.0
 # mypy>=0.910
+# pre-commit>=2.15.0
+
+# Documentation dependencies (for building docs)
+# sphinx>=4.0.0
+# sphinx-rtd-theme>=1.0.0
