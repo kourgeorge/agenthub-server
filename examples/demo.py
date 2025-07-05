@@ -418,7 +418,7 @@ async def main():
     
     # Start hub server
     logger.info("🏪 Starting AgentHub marketplace server...")
-    hub_thread = start_hub_server()
+    # hub_thread = start_hub_server()
     
     # Wait for servers to be ready
     await asyncio.sleep(5)
