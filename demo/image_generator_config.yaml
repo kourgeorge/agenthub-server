@@ -1,0 +1,29 @@
+author: AgentHub Demo
+capabilities:
+- description: Main processing capability for Image Generator
+  name: process
+  parameters:
+    data:
+      required: true
+      type: string
+category: creative
+description: AI-powered image generation and editing
+endpoints:
+- description: Process data
+  method: POST
+  path: /process
+- description: ACP handshake
+  method: POST
+  path: /acp/handshake
+- description: ACP task execution
+  method: POST
+  path: /acp/task
+license: MIT
+name: Image Generator
+pricing:
+  currency: USD
+  price: 0.04
+  type: per_request
+protocol: ACP
+runtime: managed
+version: 1.0.5

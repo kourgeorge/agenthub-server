@@ -1,0 +1,29 @@
+author: AgentHub Demo
+capabilities:
+- description: Main processing capability for Text Processor
+  name: process
+  parameters:
+    data:
+      required: true
+      type: string
+category: nlp
+description: Natural language processing and text analysis
+endpoints:
+- description: Process data
+  method: POST
+  path: /process
+- description: ACP handshake
+  method: POST
+  path: /acp/handshake
+- description: ACP task execution
+  method: POST
+  path: /acp/task
+license: MIT
+name: Text Processor
+pricing:
+  currency: USD
+  price: 0.1
+  type: per_request
+protocol: ACP
+runtime: managed
+version: 2.1.0
