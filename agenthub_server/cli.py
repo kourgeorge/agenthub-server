@@ -144,6 +144,83 @@ def register_agent_command(config, database_url, endpoint_url):
         sys.exit(1)
 
 
+@hub_cli.command("register-docker-agent")
+@click.option("--config", required=True, help="Agent configuration file (YAML or JSON)")
+@click.option("--docker-image", required=True, help="Docker image name/tag")
+@click.option("--database-url", default="sqlite:///agenthub.db", help="Database URL")
+@click.option("--registry-user", help="Docker registry username")
+@click.option("--registry-pass", help="Docker registry password")
+@click.option("--registry-url", help="Docker registry URL")
+def register_docker_agent_command(config, docker_image, database_url, registry_user, registry_pass, registry_url):
+    """Register a Docker-based agent from configuration file"""
+    click.echo(f"🐳 Registering Docker agent from: {config}")
+    click.echo(f"📦 Docker image: {docker_image}")
+    
+    try:
+        # Load configuration
+        config_path = Path(config)
+        if not config_path.exists():
+            raise click.ClickException(f"Configuration file not found: {config}")
+        
+        with open(config_path, 'r') as f:
+            if config_path.suffix.lower() in ['.yaml', '.yml']:
+                config_data = yaml.safe_load(f)
+            else:
+                config_data = json.load(f)
+        
+        # Add Docker image to metadata
+        config_data["docker_image"] = docker_image
+        config_data["runtime"] = "managed"
+        config_data["protocol"] = "ACP"
+        
+        # Create metadata
+        metadata = AgentMetadata(**config_data)
+        
+        # Initialize database and register
+        db = init_database(database_url)
+        agent_id = db.register_agent(metadata)
+        
+        # Initialize Docker manager and register
+        try:
+            from .docker_manager import DockerAgentManager
+            docker_manager = DockerAgentManager()
+            
+            # Prepare registry credentials
+            registry_credentials = None
+            if registry_user and registry_pass:
+                registry_credentials = {
+                    "username": registry_user,
+                    "password": registry_pass
+                }
+                if registry_url:
+                    registry_credentials["registry"] = registry_url
+            
+            # Register with Docker manager
+            docker_config = docker_manager.register_agent_docker(
+                agent_id=agent_id,
+                docker_image=docker_image,
+                agent_metadata=metadata.dict(),
+                registry_credentials=registry_credentials
+            )
+            
+            click.echo(f"✅ Docker agent registered successfully!")
+            click.echo(f"🆔 Agent ID: {agent_id}")
+            click.echo(f"📛 Name: {metadata.name}")
+            click.echo(f"📂 Category: {metadata.category}")
+            click.echo(f"🐳 Docker Image: {docker_image}")
+            click.echo(f"🔧 Runtime: {metadata.runtime}")
+            click.echo(f"📡 Protocol: {metadata.protocol}")
+            
+        except Exception as e:
+            click.echo(f"⚠️  Agent registered in database but Docker registration failed: {e}")
+            click.echo(f"🆔 Agent ID: {agent_id}")
+            click.echo("💡 You can start the container manually later")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to register Docker agent: {e}", err=True)
+        sys.exit(1)
+
+
 @hub_cli.command("list-agents")
 @click.option("--database-url", default="sqlite:///agenthub.db", help="Database URL")
 @click.option("--category", help="Filter by category")
@@ -303,9 +380,145 @@ def test_connection_command(url, api_key):
         sys.exit(1)
 
 
+@hub_cli.command("start-container")
+@click.argument("agent_id")
+@click.option("--database-url", default="sqlite:///agenthub.db", help="Database URL")
+def start_container_command(agent_id, database_url):
+    """Start Docker container for an agent"""
+    click.echo(f"🐳 Starting container for agent: {agent_id}")
+    
+    try:
+        # Get agent info
+        db = init_database(database_url)
+        agent = db.get_agent(agent_id)
+        
+        if not agent:
+            click.echo(f"❌ Agent not found: {agent_id}")
+            sys.exit(1)
+        
+        # Get Docker image from metadata
+        metadata = agent.get("metadata", {})
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        
+        docker_image = metadata.get("docker_image")
+        if not docker_image:
+            click.echo(f"❌ Agent {agent_id} does not have Docker image configured")
+            sys.exit(1)
+        
+        # Initialize Docker manager
+        from .docker_manager import DockerAgentManager
+        docker_manager = DockerAgentManager()
+        
+        # Start container
+        container_info = docker_manager.start_agent_container(
+            agent_id=agent_id,
+            docker_image=docker_image,
+            agent_metadata=metadata
+        )
+        
+        click.echo(f"✅ Container started successfully!")
+        click.echo(f"🆔 Container ID: {container_info['container_id']}")
+        click.echo(f"📛 Container Name: {container_info['container_name']}")
+        click.echo(f"🌐 Endpoint URL: {container_info['endpoint_url']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to start container: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("stop-container")
+@click.argument("agent_id")
+def stop_container_command(agent_id):
+    """Stop Docker container for an agent"""
+    click.echo(f"🛑 Stopping container for agent: {agent_id}")
+    
+    try:
+        # Initialize Docker manager
+        from .docker_manager import DockerAgentManager
+        docker_manager = DockerAgentManager()
+        
+        # Stop container
+        success = docker_manager.stop_agent_container(agent_id)
+        
+        if success:
+            click.echo(f"✅ Container stopped successfully!")
+        else:
+            click.echo(f"❌ No running container found for agent {agent_id}")
+            sys.exit(1)
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to stop container: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("list-containers")
+def list_containers_command():
+    """List all running Docker containers"""
+    click.echo("🐳 Listing Docker containers...")
+    
+    try:
+        # Initialize Docker manager
+        from .docker_manager import DockerAgentManager
+        docker_manager = DockerAgentManager()
+        
+        # List containers
+        containers = docker_manager.list_running_containers()
+        
+        if not containers:
+            click.echo("📭 No running containers found")
+            return
+        
+        click.echo(f"📋 Found {len(containers)} running container(s):")
+        click.echo()
+        
+        for container in containers:
+            click.echo(f"🐳 {container['container_name']}")
+            click.echo(f"   Agent ID: {container['agent_id']}")
+            click.echo(f"   Container ID: {container['container_id'][:12]}...")
+            click.echo(f"   Docker Image: {container['docker_image']}")
+            click.echo(f"   Status: {container['status']}")
+            click.echo(f"   Endpoint: {container['endpoint_url']}")
+            click.echo(f"   Started: {container['started_at']}")
+            click.echo()
+            
+    except Exception as e:
+        click.echo(f"❌ Failed to list containers: {e}", err=True)
+        sys.exit(1)
+
+
+@hub_cli.command("container-logs")
+@click.argument("agent_id")
+@click.option("--tail", default=100, help="Number of lines to show")
+def container_logs_command(agent_id, tail):
+    """Get logs from agent container"""
+    click.echo(f"📜 Getting logs for agent: {agent_id}")
+    
+    try:
+        # Initialize Docker manager
+        from .docker_manager import DockerAgentManager
+        docker_manager = DockerAgentManager()
+        
+        # Get logs
+        logs = docker_manager.get_container_logs(agent_id, tail)
+        
+        if logs:
+            click.echo(f"📋 Last {tail} lines of logs:")
+            click.echo("=" * 50)
+            click.echo(logs)
+            click.echo("=" * 50)
+        else:
+            click.echo(f"❌ No logs found for agent {agent_id}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to get logs: {e}", err=True)
+        sys.exit(1)
+
+
 @hub_cli.command("example-config")
 @click.option("--output", default="example_agent.yaml", help="Output file")
-def example_config_command(output):
+@click.option("--docker", is_flag=True, help="Generate Docker agent configuration")
+def example_config_command(output, docker):
     """Generate an example agent configuration file"""
     example_config = {
         "name": "Example Agent",
@@ -355,11 +568,40 @@ def example_config_command(output):
         "repository_url": "https://github.com/example/agent"
     }
     
+    if docker:
+        example_config["runtime"] = "managed"
+        example_config["protocol"] = "ACP"
+        example_config["docker_image"] = "example/agent:latest"
+        
+        # Add ACP endpoints
+        example_config["endpoints"].extend([
+            {
+                "path": "/acp/handshake",
+                "method": "POST",
+                "description": "ACP handshake"
+            },
+            {
+                "path": "/acp/task",
+                "method": "POST",
+                "description": "ACP task execution"
+            },
+            {
+                "path": "/acp/heartbeat",
+                "method": "POST",
+                "description": "ACP heartbeat"
+            }
+        ])
+    
     with open(output, 'w') as f:
         yaml.dump(example_config, f, default_flow_style=False, indent=2)
     
     click.echo(f"✅ Example configuration saved to: {output}")
-    click.echo("📝 Edit this file and use 'agenthub register-agent --config example_agent.yaml'")
+    
+    if docker:
+        click.echo("🐳 Docker agent configuration generated")
+        click.echo("📝 Edit this file and use 'agenthub register-docker-agent --config example_agent.yaml --docker-image your/image:tag'")
+    else:
+        click.echo("📝 Edit this file and use 'agenthub register-agent --config example_agent.yaml'")
 
 
 if __name__ == "__main__":

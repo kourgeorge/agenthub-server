@@ -5,6 +5,7 @@ AgentHub Server - Complete marketplace server with database persistence
 import uvicorn
 import asyncio
 import httpx
+import json
 from typing import Dict, Any, Optional, List, Union
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -23,6 +24,8 @@ from .models import (
     AgentMetadata, TaskRequest, TaskResponse, AgentStatus, 
     AgentRegistration, PricingModel, PricingType
 )
+from .docker_manager import DockerAgentManager
+from .acp_protocol import ACPManager
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +36,15 @@ security = HTTPBearer(auto_error=False)
 
 class AgentHubServer:
     """
-    Complete AgentHub marketplace server with database persistence
+    Complete AgentHub marketplace server with database persistence and Docker support
     """
     
     def __init__(
         self, 
         database_url: str = "sqlite:///agenthub.db",
         enable_cors: bool = True,
-        require_auth: bool = True
+        require_auth: bool = True,
+        enable_docker: bool = True
     ):
         """
         Initialize AgentHub server
@@ -49,15 +53,30 @@ class AgentHubServer:
             database_url: Database connection string
             enable_cors: Enable CORS middleware
             require_auth: Require API key authentication
+            enable_docker: Enable Docker agent management
         """
         self.database_url = database_url
         self.require_auth = require_auth
+        self.enable_docker = enable_docker
         self.db = init_database(database_url)
+        
+        # Initialize Docker manager
+        self.docker_manager = None
+        if enable_docker:
+            try:
+                self.docker_manager = DockerAgentManager()
+                logger.info("Docker agent manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Docker manager: {e}")
+                self.enable_docker = False
+        
+        # Initialize ACP manager
+        self.acp_manager = ACPManager()
         
         # Create FastAPI app
         self.app = FastAPI(
             title="AgentHub Marketplace Server",
-            description="Distributed AI agent ecosystem",
+            description="Distributed AI agent ecosystem with Docker support",
             version="1.0.0"
         )
         
@@ -114,6 +133,55 @@ class AgentHubServer:
                 
             except Exception as e:
                 logger.error(f"Failed to register agent: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        # Docker agent registration
+        @self.app.post("/agents/register-docker")
+        async def register_docker_agent(
+            request: Dict[str, Any],
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Register a Docker-based agent"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                # Extract required fields
+                docker_image = request.get("docker_image")
+                agent_metadata = request.get("metadata")
+                registry_credentials = request.get("registry_credentials")
+                
+                if not docker_image:
+                    raise HTTPException(status_code=400, detail="docker_image is required")
+                if not agent_metadata:
+                    raise HTTPException(status_code=400, detail="metadata is required")
+                
+                # Create agent metadata object
+                metadata = AgentMetadata(**agent_metadata)
+                
+                # Register in database
+                agent_id = self.db.register_agent(metadata)
+                
+                # Register with Docker manager
+                docker_config = self.docker_manager.register_agent_docker(
+                    agent_id=agent_id,
+                    docker_image=docker_image,
+                    agent_metadata=metadata.dict(),
+                    registry_credentials=registry_credentials
+                )
+                
+                logger.info(f"Registered Docker agent {agent_id}: {metadata.name}")
+                
+                return {
+                    "agent_id": agent_id,
+                    "name": metadata.name,
+                    "docker_image": docker_image,
+                    "status": "registered",
+                    "message": "Docker agent successfully registered"
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to register Docker agent: {str(e)}")
                 raise HTTPException(status_code=500, detail=str(e))
         
         # Agent discovery
@@ -347,6 +415,188 @@ class AgentHubServer:
             # Implementation would update the database
             
             return {"message": "Heartbeat received", "timestamp": datetime.now().isoformat()}
+        
+        # Docker container management routes
+        @self.app.post("/agents/{agent_id}/start-container")
+        async def start_agent_container(
+            agent_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Start Docker container for an agent"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                # Get agent info
+                agent = self.db.get_agent(agent_id)
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                # Get Docker image from metadata
+                metadata = agent.get("metadata", {})
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                
+                docker_image = metadata.get("docker_image")
+                if not docker_image:
+                    raise HTTPException(status_code=400, detail="Agent does not have Docker image configured")
+                
+                # Start container
+                container_info = self.docker_manager.start_agent_container(
+                    agent_id=agent_id,
+                    docker_image=docker_image,
+                    agent_metadata=metadata
+                )
+                
+                return {
+                    "message": "Container started successfully",
+                    "container_info": container_info
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to start container for agent {agent_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/agents/{agent_id}/stop-container")
+        async def stop_agent_container(
+            agent_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Stop Docker container for an agent"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                success = self.docker_manager.stop_agent_container(agent_id)
+                
+                if success:
+                    return {"message": "Container stopped successfully"}
+                else:
+                    raise HTTPException(status_code=404, detail="No running container found for agent")
+                
+            except Exception as e:
+                logger.error(f"Failed to stop container for agent {agent_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/agents/{agent_id}/container-info")
+        async def get_agent_container_info(
+            agent_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Get container information for an agent"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                container_info = self.docker_manager.get_agent_container_info(agent_id)
+                
+                if container_info:
+                    return container_info
+                else:
+                    raise HTTPException(status_code=404, detail="No container found for agent")
+                
+            except Exception as e:
+                logger.error(f"Failed to get container info for agent {agent_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/agents/{agent_id}/container-logs")
+        async def get_agent_container_logs(
+            agent_id: str,
+            tail: int = 100,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Get container logs for an agent"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                logs = self.docker_manager.get_container_logs(agent_id, tail)
+                
+                return {
+                    "agent_id": agent_id,
+                    "logs": logs,
+                    "tail": tail
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to get container logs for agent {agent_id}: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.get("/docker/containers")
+        async def list_docker_containers(
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """List all running Docker containers"""
+            try:
+                if not self.enable_docker:
+                    raise HTTPException(status_code=400, detail="Docker support is disabled")
+                
+                containers = self.docker_manager.list_running_containers()
+                
+                return {
+                    "containers": containers,
+                    "count": len(containers)
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to list containers: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        # ACP protocol status routes
+        @self.app.get("/acp/status")
+        async def get_acp_status(
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Get ACP protocol status for all agents"""
+            try:
+                status = self.acp_manager.get_health_status()
+                connected_agents = self.acp_manager.list_connected_agents()
+                
+                return {
+                    "connected_agents": connected_agents,
+                    "agent_status": status,
+                    "total_connections": len(connected_agents)
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to get ACP status: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @self.app.post("/acp/connect/{agent_id}")
+        async def connect_acp_agent(
+            agent_id: str,
+            user: Dict[str, Any] = Depends(self.get_current_user)
+        ):
+            """Connect to an agent using ACP protocol"""
+            try:
+                # Get agent info
+                agent = self.db.get_agent(agent_id)
+                if not agent:
+                    raise HTTPException(status_code=404, detail="Agent not found")
+                
+                # Get endpoint URL
+                endpoint_url = agent.get("endpoint_url")
+                if not endpoint_url:
+                    # Check if Docker container is running
+                    if self.enable_docker:
+                        container_info = self.docker_manager.get_agent_container_info(agent_id)
+                        if container_info:
+                            endpoint_url = container_info["endpoint_url"]
+                
+                if not endpoint_url:
+                    raise HTTPException(status_code=400, detail="No endpoint URL available for agent")
+                
+                # Connect using ACP
+                success = await self.acp_manager.connect_agent(agent_id, endpoint_url)
+                
+                if success:
+                    return {"message": "ACP connection established", "agent_id": agent_id}
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to establish ACP connection")
+                
+            except Exception as e:
+                logger.error(f"Failed to connect to agent {agent_id} via ACP: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
     
     async def get_current_user(
         self, 
@@ -393,8 +643,37 @@ class AgentHubServer:
             # Update task status to running
             self.db.update_task(task_id, "running")
             
-            # Determine endpoint URL
-            endpoint_url = agent_info.get("endpoint_url")
+            agent_id = agent_info["id"]
+            
+            # Check if this is a Docker agent that needs to be started
+            if self.enable_docker and not agent_info.get("endpoint_url"):
+                container_info = self.docker_manager.get_agent_container_info(agent_id)
+                
+                if not container_info or container_info.get("status") != "running":
+                    # Need to start the Docker container
+                    logger.info(f"Starting Docker container for agent {agent_id}")
+                    
+                    # Get Docker image from agent metadata
+                    metadata = agent_info.get("metadata", {})
+                    docker_image = metadata.get("docker_image")
+                    
+                    if not docker_image:
+                        raise Exception(f"No Docker image found for agent {agent_id}")
+                    
+                    container_info = self.docker_manager.start_agent_container(
+                        agent_id=agent_id,
+                        docker_image=docker_image,
+                        agent_metadata=metadata
+                    )
+                    
+                    # Update agent endpoint URL in database
+                    endpoint_url = container_info["endpoint_url"]
+                    # TODO: Update agent endpoint URL in database
+                else:
+                    endpoint_url = container_info["endpoint_url"]
+            else:
+                endpoint_url = agent_info.get("endpoint_url")
+            
             if not endpoint_url:
                 # Try to find a local agent
                 if agent_info["id"] in registered_agents:
@@ -403,17 +682,46 @@ class AgentHubServer:
                 else:
                     raise Exception("No endpoint URL available for agent")
             
-            # Make HTTP request to agent
-            full_url = f"{endpoint_url.rstrip('/')}{task_request.endpoint}"
+            # Check if agent supports ACP protocol
+            metadata = agent_info.get("metadata", {})
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
             
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    full_url,
-                    json=task_request.parameters,
-                    headers={"Content-Type": "application/json"}
+            protocol = metadata.get("protocol", "HTTP")
+            
+            if protocol == "ACP":
+                # Use ACP protocol
+                logger.info(f"Using ACP protocol for agent {agent_id}")
+                
+                # Connect to agent using ACP if not already connected
+                if not self.acp_manager.get_agent_status(agent_id):
+                    success = await self.acp_manager.connect_agent(agent_id, endpoint_url)
+                    if not success:
+                        raise Exception(f"Failed to connect to agent {agent_id} using ACP")
+                
+                # Send task request via ACP
+                result = await self.acp_manager.send_task_request(
+                    agent_id=agent_id,
+                    endpoint=task_request.endpoint,
+                    parameters=task_request.parameters,
+                    timeout=30.0
                 )
-                response.raise_for_status()
-                result = response.json()
+                
+            else:
+                # Use HTTP protocol
+                logger.info(f"Using HTTP protocol for agent {agent_id}")
+                
+                # Make HTTP request to agent
+                full_url = f"{endpoint_url.rstrip('/')}{task_request.endpoint}"
+                
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        full_url,
+                        json=task_request.parameters,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    response.raise_for_status()
+                    result = response.json()
             
             execution_time = time.time() - start_time
             
@@ -520,7 +828,8 @@ class AgentHubServer:
 def create_hub_server(
     database_url: str = "sqlite:///agenthub.db",
     enable_cors: bool = True,
-    require_auth: bool = True
+    require_auth: bool = True,
+    enable_docker: bool = True
 ) -> AgentHubServer:
     """
     Create an AgentHub server instance
@@ -529,6 +838,7 @@ def create_hub_server(
         database_url: Database connection string
         enable_cors: Enable CORS middleware
         require_auth: Require API key authentication
+        enable_docker: Enable Docker agent management
         
     Returns:
         AgentHubServer instance
@@ -536,7 +846,8 @@ def create_hub_server(
     return AgentHubServer(
         database_url=database_url,
         enable_cors=enable_cors,
-        require_auth=require_auth
+        require_auth=require_auth,
+        enable_docker=enable_docker
     )
 
 
