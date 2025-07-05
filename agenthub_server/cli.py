@@ -11,9 +11,9 @@ import sys
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-from server import create_hub_server, serve_hub, start_development_hub
-from database import init_database, DatabaseManager
-from models import AgentMetadata, AgentRegistration
+from .server import create_hub_server, serve_hub, start_development_hub
+from .database import init_database, DatabaseManager
+from .models import AgentMetadata, AgentRegistration
 
 
 @click.group()

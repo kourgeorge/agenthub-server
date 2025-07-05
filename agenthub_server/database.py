@@ -18,7 +18,7 @@ try:
 except ImportError:
     POSTGRESQL_AVAILABLE = False
 
-from models import AgentMetadata, TaskRequest, TaskResponse, AgentStatus
+from .models import AgentMetadata, TaskRequest, TaskResponse, AgentStatus
 
 logger = logging.getLogger(__name__)
 

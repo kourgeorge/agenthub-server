@@ -18,8 +18,8 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from database import DatabaseManager, get_database, init_database
-from models import (
+from .database import DatabaseManager, get_database, init_database
+from .models import (
     AgentMetadata, TaskRequest, TaskResponse, AgentStatus, 
     AgentRegistration, PricingModel, PricingType
 )
